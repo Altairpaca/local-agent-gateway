@@ -53,3 +53,18 @@ export interface ExecutionReceipt extends ReceiptInput {
   schemaVersion: typeof RECEIPT_SCHEMA_VERSION;
   receiptSha256: string;
 }
+
+export type DispatchDenialReason =
+  | Exclude<AuthorizationDecision["reason"], "allowed">
+  | "project-unregistered"
+  | "agent-unregistered"
+  | "adapter-capability-mismatch"
+  | "request-id-conflict";
+
+export interface DispatchResult {
+  status: "executed" | "denied" | "replayed";
+  authorization: AuthorizationDecision;
+  receipt: ExecutionReceipt;
+  denialReason?: DispatchDenialReason;
+  adapterInvoked: boolean;
+}
