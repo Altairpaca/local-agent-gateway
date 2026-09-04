@@ -33,6 +33,11 @@ export class InMemoryRequestLedger implements RequestLedger {
   }
 }
 
+interface InFlightRequest {
+  fingerprint: string;
+  promise: Promise<DispatchResult>;
+}
+
 export interface GatewayDispatcherOptions {
   projects: ProjectRegistry;
   adapters: AdapterRegistry;
@@ -84,6 +89,7 @@ export class GatewayDispatcher {
   readonly #adapters: AdapterRegistry;
   readonly #ledger: RequestLedger;
   readonly #now: () => Date;
+  readonly #inFlight = new Map<string, InFlightRequest>();
 
   constructor(options: GatewayDispatcherOptions) {
     this.#projects = options.projects;
@@ -102,10 +108,34 @@ export class GatewayDispatcher {
     if (existing) {
       if (existing.fingerprint === fingerprint) return withReplayStatus(existing.result);
       const now = this.#now();
-      const authorization = authorize(grant, request, now);
-      return denialReceipt(grant, request, authorization, "request-id-conflict", now);
+      return denialReceipt(grant, request, authorize(grant, request, now), "request-id-conflict", now);
     }
 
+    const active = this.#inFlight.get(request.id);
+    if (active) {
+      if (active.fingerprint !== fingerprint) {
+        const now = this.#now();
+        return denialReceipt(grant, request, authorize(grant, request, now), "request-id-conflict", now);
+      }
+      return withReplayStatus(await active.promise);
+    }
+
+    const promise = this.#dispatchFresh(grant, request, fingerprint, signal);
+    this.#inFlight.set(request.id, { fingerprint, promise });
+    try {
+      return await promise;
+    } finally {
+      const current = this.#inFlight.get(request.id);
+      if (current?.promise === promise) this.#inFlight.delete(request.id);
+    }
+  }
+
+  async #dispatchFresh(
+    grant: CapabilityGrant,
+    request: DelegationRequest,
+    fingerprint: string,
+    signal?: AbortSignal,
+  ): Promise<DispatchResult> {
     const now = this.#now();
     const authorization = authorize(grant, request, now);
     if (!authorization.allowed) {
