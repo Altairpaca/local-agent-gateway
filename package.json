@@ -1,0 +1,19 @@
+{
+  "name": "@altairpaca/local-agent-gateway",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Capability policy and audit contracts for cloud-to-local agent delegation.",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "check": "tsc -p tsconfig.json --noEmit",
+    "test": "npm run build && node --test dist/tests/*.test.js"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "typescript": "^5.7.2"
+  }
+}
