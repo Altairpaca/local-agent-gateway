@@ -48,7 +48,7 @@ const baseRequest: DelegationRequest = {
 
 const fixedNow = () => new Date("2026-09-04T12:00:00Z");
 
-function setup(adapter = new FakeAdapter()) {
+function setup(adapter: LocalAgentAdapter = new FakeAdapter()) {
   const projects = new StaticProjectRegistry([{ id: "dshelm", root: "/srv/projects/dshelm" }]);
   const adapters = new StaticAdapterRegistry([adapter]);
   return { adapter, dispatcher: new GatewayDispatcher({ projects, adapters, now: fixedNow }) };
@@ -60,8 +60,8 @@ test("authorized dispatch resolves local project and invokes adapter exactly onc
 
   assert.equal(result.status, "executed");
   assert.equal(result.adapterInvoked, true);
-  assert.equal(adapter.calls.length, 1);
-  assert.equal(adapter.calls[0]?.project.root, "/srv/projects/dshelm");
+  assert.equal((adapter as FakeAdapter).calls.length, 1);
+  assert.equal((adapter as FakeAdapter).calls[0]?.project.root, "/srv/projects/dshelm");
   assert.equal(verifyReceipt(result.receipt), true);
   assert.equal(result.receipt.outcome, "success");
 });
@@ -75,7 +75,7 @@ test("authorized but unregistered project is denied before adapter invocation", 
   assert.equal(result.status, "denied");
   assert.equal(result.denialReason, "project-unregistered");
   assert.equal(result.adapterInvoked, false);
-  assert.equal(adapter.calls.length, 0);
+  assert.equal((adapter as FakeAdapter).calls.length, 0);
   assert.equal(result.receipt.outcome, "denied");
 });
 
@@ -91,7 +91,8 @@ test("adapter capability declaration is enforced before execution", async () => 
 });
 
 test("identical request replay returns the original receipt without invoking twice", async () => {
-  const { adapter, dispatcher } = setup();
+  const adapter = new FakeAdapter();
+  const { dispatcher } = setup(adapter);
   const first = await dispatcher.dispatch(baseGrant, baseRequest);
   const replay = await dispatcher.dispatch(baseGrant, baseRequest);
 
@@ -124,8 +125,74 @@ test("reusing a request id with different authority or payload is denied as conf
   assert.equal(adapter.calls.length, 1);
 });
 
+test("reusing a request id after grant authority changes is denied as conflict", async () => {
+  const adapter = new FakeAdapter();
+  const { dispatcher } = setup(adapter);
+  await dispatcher.dispatch(baseGrant, baseRequest);
+
+  const changedGrant: CapabilityGrant = {
+    ...baseGrant,
+    expiresAt: "2026-09-06T00:00:00Z",
+  };
+  const conflict = await dispatcher.dispatch(changedGrant, baseRequest);
+
+  assert.equal(conflict.status, "denied");
+  assert.equal(conflict.denialReason, "request-id-conflict");
+  assert.equal(adapter.calls.length, 1);
+});
+
+test("grant set ordering does not change replay identity", async () => {
+  const adapter = new FakeAdapter();
+  const projects = new StaticProjectRegistry([{ id: "dshelm", root: "/srv/projects/dshelm" }]);
+  const dispatcher = new GatewayDispatcher({
+    projects,
+    adapters: new StaticAdapterRegistry([adapter]),
+    now: fixedNow,
+  });
+  const grant: CapabilityGrant = {
+    ...baseGrant,
+    capabilities: ["workspace.read", "agent.delegate"],
+    projectIds: ["dshelm"],
+    agentIds: ["codex"],
+  };
+  const reordered: CapabilityGrant = {
+    ...grant,
+    capabilities: ["agent.delegate", "workspace.read"],
+  };
+
+  const first = await dispatcher.dispatch(grant, baseRequest);
+  const replay = await dispatcher.dispatch(reordered, baseRequest);
+  assert.equal(first.status, "executed");
+  assert.equal(replay.status, "replayed");
+  assert.equal(adapter.calls.length, 1);
+});
+
+test("adapter exceptions become replayable failure receipts", async () => {
+  let calls = 0;
+  const throwingAdapter: LocalAgentAdapter = {
+    id: "codex",
+    capabilities: ["agent.delegate"],
+    async execute() {
+      calls += 1;
+      throw new Error("synthetic adapter failure");
+    },
+  };
+  const { dispatcher } = setup(throwingAdapter);
+
+  const first = await dispatcher.dispatch(baseGrant, baseRequest);
+  const replay = await dispatcher.dispatch(baseGrant, baseRequest);
+
+  assert.equal(first.status, "executed");
+  assert.equal(first.receipt.outcome, "failure");
+  assert.equal(verifyReceipt(first.receipt), true);
+  assert.equal(replay.status, "replayed");
+  assert.equal(replay.receipt.receiptSha256, first.receipt.receiptSha256);
+  assert.equal(calls, 1);
+});
+
 test("authorization denial occurs before registry and adapter execution", async () => {
-  const { adapter, dispatcher } = setup();
+  const adapter = new FakeAdapter();
+  const { dispatcher } = setup(adapter);
   const denied = await dispatcher.dispatch(baseGrant, { ...baseRequest, sessionId: "wrong" });
 
   assert.equal(denied.status, "denied");
