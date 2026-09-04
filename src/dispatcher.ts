@@ -45,6 +45,22 @@ export interface GatewayDispatcherOptions {
   now?: () => Date;
 }
 
+function replayFingerprint(grant: CapabilityGrant, request: DelegationRequest): string {
+  return sha256Canonical({
+    grant: {
+      id: grant.id,
+      subject: grant.subject,
+      sessionId: grant.sessionId,
+      issuedAt: grant.issuedAt,
+      expiresAt: grant.expiresAt,
+      capabilities: [...grant.capabilities].sort(),
+      projectIds: [...grant.projectIds].sort(),
+      agentIds: [...grant.agentIds].sort(),
+    },
+    request,
+  });
+}
+
 function withReplayStatus(result: DispatchResult): DispatchResult {
   const replayed: DispatchResult = {
     status: "replayed",
@@ -84,6 +100,13 @@ function adapterSupports(adapter: LocalAgentAdapter, request: DelegationRequest)
   return adapter.capabilities.includes(request.capability);
 }
 
+function errorEvidence(error: unknown): string {
+  if (error instanceof Error) {
+    return sha256Canonical({ kind: "adapter-error", name: error.name, message: error.message });
+  }
+  return sha256Canonical({ kind: "adapter-error", value: String(error) });
+}
+
 export class GatewayDispatcher {
   readonly #projects: ProjectRegistry;
   readonly #adapters: AdapterRegistry;
@@ -103,7 +126,7 @@ export class GatewayDispatcher {
     request: DelegationRequest,
     signal?: AbortSignal,
   ): Promise<DispatchResult> {
-    const fingerprint = sha256Canonical({ grantId: grant.id, request });
+    const fingerprint = replayFingerprint(grant, request);
     const existing = this.#ledger.get(request.id);
     if (existing) {
       if (existing.fingerprint === fingerprint) return withReplayStatus(existing.result);
@@ -165,20 +188,39 @@ export class GatewayDispatcher {
     }
 
     const context = signal === undefined ? { request, project } : { request, project, signal };
-    const execution = await adapter.execute(context);
-    const result: DispatchResult = {
-      status: "executed",
-      authorization,
-      adapterInvoked: true,
-      receipt: createReceipt({
-        request,
-        grantId: grant.id,
-        startedAt: execution.startedAt,
-        finishedAt: execution.finishedAt,
-        outcome: execution.outcome,
-        evidenceSha256: execution.evidenceSha256,
-      }),
-    };
+    const dispatcherStartedAt = this.#now().toISOString();
+    let result: DispatchResult;
+    try {
+      const execution = await adapter.execute(context);
+      result = {
+        status: "executed",
+        authorization,
+        adapterInvoked: true,
+        receipt: createReceipt({
+          request,
+          grantId: grant.id,
+          startedAt: execution.startedAt,
+          finishedAt: execution.finishedAt,
+          outcome: execution.outcome,
+          evidenceSha256: execution.evidenceSha256,
+        }),
+      };
+    } catch (error: unknown) {
+      result = {
+        status: "executed",
+        authorization,
+        adapterInvoked: true,
+        receipt: createReceipt({
+          request,
+          grantId: grant.id,
+          startedAt: dispatcherStartedAt,
+          finishedAt: this.#now().toISOString(),
+          outcome: "failure",
+          evidenceSha256: errorEvidence(error),
+        }),
+      };
+    }
+
     this.#ledger.put(request.id, { fingerprint, result });
     return result;
   }
