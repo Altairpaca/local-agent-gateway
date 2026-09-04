@@ -4,7 +4,7 @@
 
 Local Agent Gateway is designed for workflows where ChatGPT or another cloud agent coordinates work, while Codex, Hermes, OmO or another developer agent executes against the real local machine. The remote caller gets bounded capabilities—not a raw filesystem path or an unrestricted shell.
 
-> Status: early v0.2 foundation. Authorization, local registries, policy-first dispatch, idempotent request handling and tamper-evident receipts are implemented. Transports and real local-agent adapters remain separate integration work.
+> Status: early v0.2 foundation. Authorization, local registries, policy-first dispatch, authority-bound idempotency and tamper-evident receipts are implemented. Transports and real local-agent adapters remain separate integration work.
 
 ## Core model
 
@@ -28,11 +28,13 @@ A remote request cannot select an arbitrary local path. Logical project IDs are 
 - static project and adapter registries with duplicate-ID rejection;
 - deny-before-resolve/execute dispatch ordering;
 - adapter capability declarations enforced before execution;
-- request-ID idempotency: exact replay returns the original receipt without re-executing;
-- request-ID reuse with changed authority/payload is denied;
+- request replay identity bound to normalized full grant authority plus request payload;
+- sequential and concurrent identical replay without duplicate adapter execution inside one dispatcher instance;
+- request-ID reuse with changed authority/payload denied as `request-id-conflict`;
+- adapter exceptions converted into replayable failure receipts instead of becoming unrecorded retry hazards;
 - canonical `lag.receipt/v1` execution receipts;
 - SHA-256 receipt integrity verification;
-- deterministic fake-adapter tests on Node 20/22.
+- deterministic fake-adapter and concurrency tests on Node 20/22.
 
 ```bash
 npm install
@@ -46,10 +48,12 @@ npm test
 
 A duplicate request ID behaves in one of two ways:
 
-- same grant + same request payload: return the previously recorded receipt with `status: replayed` and do not invoke the adapter again;
-- changed grant or request payload: return a denied receipt with `request-id-conflict`.
+- same normalized grant authority + same request payload: return/join the existing execution and surface the recorded receipt with `status: replayed`, without invoking the adapter again;
+- changed grant authority or request payload: return a denied receipt with `request-id-conflict`.
 
-The in-memory ledger is a reference implementation of semantics, not a production persistence claim.
+If an authorized adapter invocation throws, the dispatcher records a `failure` receipt and exact replay returns that receipt rather than silently attempting the side effect again.
+
+The in-memory ledger and in-flight map are reference implementations of the semantics, not a production persistence or distributed-coordination claim.
 
 ## What this is not
 
