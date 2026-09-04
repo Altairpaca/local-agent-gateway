@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { RECEIPT_SCHEMA_VERSION, type ExecutionReceipt, type ReceiptInput } from "./contracts.js";
 
-function canonicalJson(value: unknown): string {
+export function canonicalJson(value: unknown): string {
   if (value === null || typeof value === "boolean" || typeof value === "number" || typeof value === "string") {
     return JSON.stringify(value);
   }
@@ -12,7 +12,11 @@ function canonicalJson(value: unknown): string {
     const entries = Object.entries(value as Record<string, unknown>).sort(([left], [right]) => left.localeCompare(right));
     return `{${entries.map(([key, item]) => `${JSON.stringify(key)}:${canonicalJson(item)}`).join(",")}}`;
   }
-  throw new TypeError(`Unsupported receipt value: ${typeof value}`);
+  throw new TypeError(`Unsupported canonical value: ${typeof value}`);
+}
+
+export function sha256Canonical(value: unknown): string {
+  return createHash("sha256").update(canonicalJson(value)).digest("hex");
 }
 
 export function createReceipt(input: ReceiptInput): ExecutionReceipt {
@@ -27,12 +31,11 @@ export function createReceipt(input: ReceiptInput): ExecutionReceipt {
   }
 
   const unsigned = { schemaVersion: RECEIPT_SCHEMA_VERSION, ...input };
-  const receiptSha256 = createHash("sha256").update(canonicalJson(unsigned)).digest("hex");
+  const receiptSha256 = sha256Canonical(unsigned);
   return { ...unsigned, receiptSha256 };
 }
 
 export function verifyReceipt(receipt: ExecutionReceipt): boolean {
   const { receiptSha256, ...unsigned } = receipt;
-  const expected = createHash("sha256").update(canonicalJson(unsigned)).digest("hex");
-  return expected === receiptSha256;
+  return sha256Canonical(unsigned) === receiptSha256;
 }

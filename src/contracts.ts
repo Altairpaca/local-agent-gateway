@@ -27,18 +27,18 @@ export interface DelegationRequest {
   agentId: string;
 }
 
-export interface AuthorizationDecision {
-  allowed: boolean;
-  reason:
-    | "allowed"
-    | "grant-not-yet-valid"
-    | "grant-expired"
-    | "subject-mismatch"
-    | "session-mismatch"
-    | "capability-not-granted"
-    | "project-not-granted"
-    | "agent-not-granted";
-}
+export type AuthorizationDenialReason =
+  | "grant-not-yet-valid"
+  | "grant-expired"
+  | "subject-mismatch"
+  | "session-mismatch"
+  | "capability-not-granted"
+  | "project-not-granted"
+  | "agent-not-granted";
+
+export type AuthorizationDecision =
+  | { allowed: true; reason: "allowed" }
+  | { allowed: false; reason: AuthorizationDenialReason };
 
 export interface ReceiptInput {
   request: DelegationRequest;
@@ -52,4 +52,19 @@ export interface ReceiptInput {
 export interface ExecutionReceipt extends ReceiptInput {
   schemaVersion: typeof RECEIPT_SCHEMA_VERSION;
   receiptSha256: string;
+}
+
+export type DispatchDenialReason =
+  | AuthorizationDenialReason
+  | "project-unregistered"
+  | "agent-unregistered"
+  | "adapter-capability-mismatch"
+  | "request-id-conflict";
+
+export interface DispatchResult {
+  status: "executed" | "denied" | "replayed";
+  authorization: AuthorizationDecision;
+  receipt: ExecutionReceipt;
+  denialReason?: DispatchDenialReason;
+  adapterInvoked: boolean;
 }
