@@ -18,17 +18,19 @@ function context(capability: "workspace.read" | "workspace.write"): AdapterExecu
   };
 }
 
-test("reference adapter hashes bounded sanitized evidence", async () => {
+test("reference adapter hashes only explicitly sanitized success evidence", async () => {
   const times = [new Date("2026-09-05T00:00:00Z"), new Date("2026-09-05T00:00:01Z")];
   const adapter = createReferenceAdapter({
     id: "reference",
     capabilities: ["workspace.read"],
     now: () => times.shift()!,
-    execute: async () => ({ files: 3, source: "fixture" }),
+    execute: async () => ({ files: 3, source: "fixture", token: "secret" }),
+    sanitizeDetails: ({ files, source }) => ({ files, source }),
   });
 
   const result = await adapter.execute(context("workspace.read"));
   assert.equal(result.outcome, "success");
+  assert.deepEqual(result.details, { files: 3, source: "fixture" });
   assert.equal(
     result.evidenceSha256,
     sha256Canonical({
@@ -41,6 +43,18 @@ test("reference adapter hashes bounded sanitized evidence", async () => {
   );
 });
 
+test("reference adapter drops success details by default", async () => {
+  const times = [new Date("2026-09-05T00:00:00Z"), new Date("2026-09-05T00:00:01Z")];
+  const adapter = createReferenceAdapter({
+    id: "reference",
+    capabilities: ["workspace.read"],
+    now: () => times.shift()!,
+    execute: async () => ({ apiKey: "must-not-escape" }),
+  });
+  const result = await adapter.execute(context("workspace.read"));
+  assert.deepEqual(result.details, {});
+});
+
 test("reference adapter fails closed on undeclared capability", async () => {
   const adapter = createReferenceAdapter({
     id: "reference",
@@ -50,17 +64,44 @@ test("reference adapter fails closed on undeclared capability", async () => {
   await assert.rejects(() => adapter.execute(context("workspace.write")), /cannot execute capability/);
 });
 
-test("reference adapter converts executor errors into bounded failure evidence", async () => {
+test("reference adapter does not expose raw runtime errors by default", async () => {
   const times = [new Date("2026-09-05T00:00:00Z"), new Date("2026-09-05T00:00:02Z")];
   const adapter = createReferenceAdapter({
     id: "reference",
     capabilities: ["workspace.read"],
     now: () => times.shift()!,
     execute: async () => {
-      throw new Error("fixture failed");
+      throw new Error("token=super-secret filesystem=/private/path");
     },
   });
   const result = await adapter.execute(context("workspace.read"));
   assert.equal(result.outcome, "failure");
-  assert.deepEqual(result.details, { error: "fixture failed" });
+  assert.deepEqual(result.details, { error: "runtime-error" });
+  assert.doesNotMatch(JSON.stringify(result), /super-secret|private\/path/);
+});
+
+test("reference adapter permits an explicit bounded failure sanitizer", async () => {
+  const times = [new Date("2026-09-05T00:00:00Z"), new Date("2026-09-05T00:00:02Z")];
+  const adapter = createReferenceAdapter({
+    id: "reference",
+    capabilities: ["workspace.read"],
+    now: () => times.shift()!,
+    sanitizeFailure: () => "runtime-unavailable",
+    execute: async () => {
+      throw new Error("sensitive upstream failure");
+    },
+  });
+  const result = await adapter.execute(context("workspace.read"));
+  assert.deepEqual(result.details, { error: "runtime-unavailable" });
+});
+
+test("reference adapter rejects a backwards clock", async () => {
+  const times = [new Date("2026-09-05T00:00:01Z"), new Date("2026-09-05T00:00:00Z")];
+  const adapter = createReferenceAdapter({
+    id: "reference",
+    capabilities: ["workspace.read"],
+    now: () => times.shift()!,
+    execute: async () => ({}),
+  });
+  await assert.rejects(() => adapter.execute(context("workspace.read")), /clock moved backwards/);
 });
