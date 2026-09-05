@@ -10,12 +10,30 @@ export interface ReferenceAdapterOptions {
   id: string;
   capabilities: readonly Capability[];
   execute: (context: AdapterExecutionContext) => Promise<Readonly<Record<string, unknown>>>;
+  sanitizeDetails?: (
+    details: Readonly<Record<string, unknown>>,
+  ) => Readonly<Record<string, unknown>>;
+  sanitizeFailure?: (error: unknown) => string;
   now?: () => Date;
 }
 
 function assertIdentifier(value: string, label: string): void {
   if (!value.trim() || /\s/.test(value)) {
     throw new Error(`${label} must be a non-empty whitespace-free identifier`);
+  }
+}
+
+function timestamp(now: () => Date): string {
+  const value = now();
+  if (!(value instanceof Date) || Number.isNaN(value.getTime())) {
+    throw new Error("reference adapter clock must return a valid Date");
+  }
+  return value.toISOString();
+}
+
+function assertMonotonic(startedAt: string, finishedAt: string): void {
+  if (Date.parse(finishedAt) < Date.parse(startedAt)) {
+    throw new Error("reference adapter clock moved backwards during execution");
   }
 }
 
@@ -29,6 +47,8 @@ export function createReferenceAdapter(options: ReferenceAdapterOptions): LocalA
   }
 
   const now = options.now ?? (() => new Date());
+  const sanitizeDetails = options.sanitizeDetails ?? (() => ({}));
+  const sanitizeFailure = options.sanitizeFailure ?? (() => "runtime-error");
   const capabilities = Object.freeze([...options.capabilities]);
 
   return Object.freeze({
@@ -42,10 +62,12 @@ export function createReferenceAdapter(options: ReferenceAdapterOptions): LocalA
         throw new Error("adapter execution aborted before start");
       }
 
-      const startedAt = now().toISOString();
+      const startedAt = timestamp(now);
       try {
-        const details = await options.execute(context);
-        const finishedAt = now().toISOString();
+        const rawDetails = await options.execute(context);
+        const details = sanitizeDetails(rawDetails);
+        const finishedAt = timestamp(now);
+        assertMonotonic(startedAt, finishedAt);
         return {
           outcome: "success",
           startedAt,
@@ -60,8 +82,12 @@ export function createReferenceAdapter(options: ReferenceAdapterOptions): LocalA
           details,
         };
       } catch (error) {
-        const finishedAt = now().toISOString();
-        const message = error instanceof Error ? error.message : "unknown adapter failure";
+        const finishedAt = timestamp(now);
+        assertMonotonic(startedAt, finishedAt);
+        const message = sanitizeFailure(error);
+        if (!message.trim()) {
+          throw new Error("sanitizeFailure must return a non-empty message");
+        }
         return {
           outcome: "failure",
           startedAt,
