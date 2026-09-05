@@ -37,6 +37,14 @@ function assertMonotonic(startedAt: string, finishedAt: string): void {
   }
 }
 
+function boundedFailureMessage(sanitizeFailure: (error: unknown) => string, error: unknown): string {
+  const message = sanitizeFailure(error);
+  if (typeof message !== "string" || !message.trim()) {
+    throw new Error("sanitizeFailure must return a non-empty message");
+  }
+  return message;
+}
+
 export function createReferenceAdapter(options: ReferenceAdapterOptions): LocalAgentAdapter {
   assertIdentifier(options.id, "adapter id");
   if (options.capabilities.length === 0) {
@@ -63,31 +71,13 @@ export function createReferenceAdapter(options: ReferenceAdapterOptions): LocalA
       }
 
       const startedAt = timestamp(now);
+      let rawDetails: Readonly<Record<string, unknown>>;
       try {
-        const rawDetails = await options.execute(context);
-        const details = sanitizeDetails(rawDetails);
-        const finishedAt = timestamp(now);
-        assertMonotonic(startedAt, finishedAt);
-        return {
-          outcome: "success",
-          startedAt,
-          finishedAt,
-          evidenceSha256: sha256Canonical({
-            adapterId: options.id,
-            requestId: context.request.id,
-            projectId: context.project.id,
-            capability: context.request.capability,
-            details,
-          }),
-          details,
-        };
+        rawDetails = await options.execute(context);
       } catch (error) {
         const finishedAt = timestamp(now);
         assertMonotonic(startedAt, finishedAt);
-        const message = sanitizeFailure(error);
-        if (!message.trim()) {
-          throw new Error("sanitizeFailure must return a non-empty message");
-        }
+        const message = boundedFailureMessage(sanitizeFailure, error);
         return {
           outcome: "failure",
           startedAt,
@@ -102,6 +92,25 @@ export function createReferenceAdapter(options: ReferenceAdapterOptions): LocalA
           details: { error: message },
         };
       }
+
+      // Evidence-layer failures are not runtime failures. If sanitization, clock or
+      // hashing fails, reject the adapter result instead of minting a misleading receipt.
+      const details = sanitizeDetails(rawDetails);
+      const finishedAt = timestamp(now);
+      assertMonotonic(startedAt, finishedAt);
+      return {
+        outcome: "success",
+        startedAt,
+        finishedAt,
+        evidenceSha256: sha256Canonical({
+          adapterId: options.id,
+          requestId: context.request.id,
+          projectId: context.project.id,
+          capability: context.request.capability,
+          details,
+        }),
+        details,
+      };
     },
   });
 }
